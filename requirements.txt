@@ -1,0 +1,12 @@
+# Core dependencies for minidebugger
+requests>=2.25.0
+
+# Flask proxy dependencies (optional)
+flask>=2.0.0
+psutil>=5.7.0
+
+# Tor support (optional)
+stem>=1.8.0
+
+# Test file dependencies
+aiohttp>=3.8.0
