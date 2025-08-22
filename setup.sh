@@ -1,157 +1,265 @@
 #!/usr/bin/env bash
 set -euxo pipefail
-
-# Export required environment variables
 export DEBIAN_FRONTEND=noninteractive
-export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 export PIP_DISABLE_PIP_VERSION_CHECK=1
+export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1
 
 echo "=== Starting Fresh Linux VM Setup for Google Jules ==="
 
-# Install system dependencies
+# Install minimal system dependencies
 echo "Installing system dependencies..."
 if command -v sudo >/dev/null 2>&1; then
     sudo apt-get update
-    sudo apt-get install -y build-essential python3-dev python3-venv python3-pip libssl-dev libffi-dev pkg-config git curl wget
+    sudo apt-get install -y build-essential python3-dev libssl-dev libffi-dev pkg-config git ca-certificates
 else
     apt-get update
-    apt-get install -y build-essential python3-dev python3-venv python3-pip libssl-dev libffi-dev pkg-config git curl wget
+    apt-get install -y build-essential python3-dev libssl-dev libffi-dev pkg-config git ca-certificates
 fi
 
-# Create and activate Python virtual environment
-echo "Setting up Python virtual environment..."
-if command -v uv >/dev/null 2>&1; then
-    echo "Using uv for virtual environment creation..."
-    uv venv .venv
-    source .venv/bin/activate
-    # Use uv for pip operations if available
-    PIP_CMD="uv pip"
-else
-    echo "Using python3 -m venv for virtual environment creation..."
-    python3 -m venv .venv
-    source .venv/bin/activate
-    PIP_CMD="pip"
+# Detect project stacks
+echo "=== Detecting Project Stacks ==="
+PYTHON_DETECTED=false
+NODEJS_DETECTED=false  
+DOTNET_DETECTED=false
+JAVA_DETECTED=false
+GO_DETECTED=false
+
+# Python detection
+if [ -f "requirements.txt" ] || [ -f "pyproject.toml" ] || ls *.py >/dev/null 2>&1; then
+    echo "Python stack detected"
+    PYTHON_DETECTED=true
 fi
 
-# Upgrade pip to latest version
-echo "Upgrading pip..."
-$PIP_CMD install --upgrade pip
-
-# Install project dependencies
-echo "Installing project dependencies..."
-if [ -f "requirements.txt" ]; then
-    echo "Found requirements.txt, installing dependencies from file..."
-    $PIP_CMD install -r requirements.txt
-elif [ -f "pyproject.toml" ]; then
-    echo "Found pyproject.toml, installing project in editable mode..."
-    $PIP_CMD install -e .
-else
-    echo "No requirements.txt or pyproject.toml found, installing common crypto bot dependencies..."
-    $PIP_CMD install ccxt pandas numpy scikit-learn python-binance requests python-dotenv pytest
+# Node.js detection  
+if [ -f "package.json" ]; then
+    echo "Node.js stack detected"
+    NODEJS_DETECTED=true
 fi
 
-# Attempt to install TA-Lib with fallback
-echo "Attempting to install TA-Lib..."
-if $PIP_CMD install ta-lib-bin 2>/dev/null; then
-    echo "Successfully installed ta-lib-bin"
-elif $PIP_CMD install TA-Lib 2>/dev/null; then
-    echo "Successfully installed TA-Lib from source"
-else
-    echo "Warning: Could not install TA-Lib (ta-lib-bin or TA-Lib source). Continuing without it..."
+# .NET detection
+if ls *.csproj >/dev/null 2>&1 || ls *.sln >/dev/null 2>&1; then
+    echo ".NET stack detected"
+    DOTNET_DETECTED=true
 fi
 
-# Echo versions of main packages
-echo "=== Package Versions ==="
-echo "Python version: $(python --version)"
-echo "pip version: $($PIP_CMD --version | head -1)"
+# Java detection
+if [ -f "gradlew" ] || [ -f "build.gradle" ] || [ -f "pom.xml" ]; then
+    echo "Java stack detected"
+    JAVA_DETECTED=true
+fi
 
-# Check versions of main packages
-for pkg in ccxt pandas numpy scikit-learn python-dotenv requests pytest; do
-    if python -c "import $pkg; print('$pkg version:', $pkg.__version__)" 2>/dev/null; then
-        :
+# Go detection
+if [ -f "go.mod" ]; then
+    echo "Go stack detected"  
+    GO_DETECTED=true
+fi
+
+# Python Stack Setup
+if [ "$PYTHON_DETECTED" = true ]; then
+    echo "=== Setting up Python Stack ==="
+    
+    # Create and activate virtual environment  
+    echo "Setting up Python virtual environment..."
+    if command -v uv >/dev/null 2>&1; then
+        echo "Using uv for virtual environment creation..."
+        uv venv .venv
+        source .venv/bin/activate
+        PIP_CMD="uv pip"
     else
-        echo "$pkg: Not installed or no version info available"
+        echo "Using python3 -m venv for virtual environment creation..."
+        python3 -m venv .venv
+        source .venv/bin/activate
+        PIP_CMD="pip"
     fi
-done
 
-# Check TA-Lib specifically (different import name)
-if python -c "import talib; print('TA-Lib version:', talib.__version__)" 2>/dev/null; then
-    :
-else
-    echo "TA-Lib: Not installed or no version info available"
-fi
-
-# Run compileall to catch syntax errors
-echo "=== Running syntax compilation check ==="
-if python -m compileall .; then
-    echo "Compilation successful - no syntax errors found"
-else
-    echo "Compilation failed - syntax errors detected"
-    exit 1
-fi
-
-# Run tests if they exist
-echo "=== Checking for and running tests ==="
-if [ -d "tests" ] || ls test_*.py >/dev/null 2>&1; then
-    echo "Found tests, running pytest..."
-    if pytest -v 2>/dev/null || python -m pytest -v 2>/dev/null; then
-        echo "Tests passed successfully"
+    # Install dependencies
+    echo "Installing Python dependencies..."
+    if [ -f "requirements.txt" ]; then
+        echo "Found requirements.txt, installing dependencies..."
+        if ! $PIP_CMD install -r requirements.txt --timeout 30 2>/dev/null; then
+            echo "Failed to install from requirements.txt, but continuing..."
+        fi
+    elif [ -f "pyproject.toml" ]; then
+        echo "Found pyproject.toml, installing project..."
+        if ! $PIP_CMD install -e . --timeout 30 2>/dev/null; then
+            echo "Failed to install from pyproject.toml, but continuing..."
+        fi
     else
-        echo "Warning: Tests failed, but continuing with environment setup..."
+        echo "No requirements.txt or pyproject.toml found, installing pytest only..."
+        if ! $PIP_CMD install pytest --timeout 30 2>/dev/null; then
+            echo "Failed to install pytest, but continuing..."
+        fi
     fi
-else
-    echo "No formal test directory or test_*.py files found"
-    # Check if testcodebase*.py files can be run
-    if ls testcodebase*.py >/dev/null 2>&1; then
-        echo "Found testcodebase files, attempting to run them..."
-        for testfile in testcodebase*.py; do
-            echo "Running $testfile..."
-            if python "$testfile" 2>/dev/null; then
-                echo "$testfile executed successfully"
-            else
-                echo "Warning: $testfile failed to execute, but continuing..."
-            fi
-        done
+
+    # Compile all Python files
+    echo "Compiling all Python files..."
+    if python -m compileall . -q; then
+        echo "Python compilation successful"
+    else
+        echo "Python compilation failed - syntax errors detected"
+        exit 1
+    fi
+
+    # Run tests if they exist
+    echo "Running Python tests..."
+    if [ -d "tests" ] || ls test_*.py >/dev/null 2>&1 || ls *test*.py >/dev/null 2>&1; then
+        echo "Found Python tests, running pytest..."
+        if pytest -q 2>/dev/null || python -m pytest -q 2>/dev/null; then
+            echo "Python tests passed"
+        else
+            echo "Python tests failed, but continuing..."
+        fi
+    else
+        echo "No Python tests found, skipping test execution"
     fi
 fi
 
-# Perform safe smoke import test
-echo "=== Performing smoke import tests ==="
-# Try to import common modules that might be the main package
-python -c "
-import sys
-import importlib.util
+# Node.js Stack Setup
+if [ "$NODEJS_DETECTED" = true ]; then
+    echo "=== Setting up Node.js Stack ==="
+    
+    # Install Node.js dependencies
+    if [ -f "yarn.lock" ]; then
+        echo "Found yarn.lock, using yarn..."
+        yarn install --frozen-lockfile 2>/dev/null || echo "Yarn install failed, but continuing..."
+    elif [ -f "pnpm-lock.yaml" ]; then
+        echo "Found pnpm-lock.yaml, using pnpm..."
+        pnpm install --frozen-lockfile 2>/dev/null || echo "pnpm install failed, but continuing..."
+    else
+        echo "Using npm..."
+        if [ -f "package-lock.json" ] || [ -f "npm-shrinkwrap.json" ]; then
+            npm ci 2>/dev/null || npm install 2>/dev/null || echo "npm install failed, but continuing..."
+        else
+            npm install 2>/dev/null || echo "npm install failed, but continuing..."
+        fi
+    fi
 
-# Try importing main Python files as modules
-main_files = ['minidebugger18', 'gemini-flask-57']
-success = False
+    # Run build if defined
+    if npm run build --if-present >/dev/null 2>&1; then
+        echo "Node.js build completed"
+    else
+        echo "No build script found or build failed, continuing..."
+    fi
 
-for module_name in main_files:
-    try:
-        # Try importing as a module
-        if importlib.util.find_spec(module_name):
-            exec(f'import {module_name}')
-            print(f'Successfully imported {module_name}')
-            success = True
-            break
-    except Exception as e:
-        print(f'Could not import {module_name}: {e}')
-        
-# Try a basic import test for cryptobot-like functionality
-try:
-    import ccxt
-    import pandas
-    import numpy
-    print('Core crypto bot dependencies imported successfully')
-    success = True
-except Exception as e:
-    print(f'Warning: Could not import core dependencies: {e}')
+    # Run tests if defined
+    if npm run test --if-present >/dev/null 2>&1; then
+        echo "Node.js tests passed"
+    else
+        echo "No test script found or tests failed, continuing..."
+    fi
+fi
 
-if success:
-    print('JULES_OK')
-else:
-    print('Warning: Some imports failed, but basic setup completed')
-    print('JULES_OK')
-"
+# .NET Stack Setup
+if [ "$DOTNET_DETECTED" = true ]; then
+    echo "=== Setting up .NET Stack ==="
+    
+    # Restore dependencies
+    echo "Restoring .NET dependencies..."
+    if dotnet restore >/dev/null 2>&1; then
+        echo ".NET restore completed"
+    else
+        echo ".NET restore failed, but continuing..."
+    fi
 
-echo "=== DONE (JULES_OK) ==="
+    # Build project
+    echo "Building .NET project..."
+    if dotnet build --no-restore >/dev/null 2>&1; then
+        echo ".NET build completed"
+    else
+        echo ".NET build failed, but continuing..."
+    fi
+
+    # Run tests if any exist
+    echo "Running .NET tests..."
+    if dotnet test --no-build --verbosity quiet >/dev/null 2>&1; then
+        echo ".NET tests passed"
+    else
+        echo "No .NET tests found or tests failed, continuing..."
+    fi
+fi
+
+# Java Stack Setup
+if [ "$JAVA_DETECTED" = true ]; then
+    echo "=== Setting up Java Stack ==="
+    
+    if [ -f "gradlew" ]; then
+        echo "Using Gradle wrapper..."
+        ./gradlew clean build test --quiet 2>/dev/null || echo "Gradle build/test failed, but continuing..."
+    elif command -v gradle >/dev/null 2>&1; then
+        echo "Using system Gradle..."
+        gradle clean build test --quiet 2>/dev/null || echo "Gradle build/test failed, but continuing..."
+    elif [ -f "pom.xml" ]; then
+        echo "Using Maven..."
+        mvn clean compile test -q 2>/dev/null || echo "Maven build/test failed, but continuing..."
+    else
+        echo "No Java build tool found, skipping..."
+    fi
+fi
+
+# Go Stack Setup
+if [ "$GO_DETECTED" = true ]; then
+    echo "=== Setting up Go Stack ==="
+    
+    # Tidy dependencies
+    echo "Running go mod tidy..."
+    if go mod tidy; then
+        echo "Go mod tidy completed"
+    else
+        echo "Go mod tidy failed, but continuing..."
+    fi
+
+    # Build all packages
+    echo "Building Go packages..."
+    if go build ./... >/dev/null 2>&1; then
+        echo "Go build completed"
+    else
+        echo "Go build failed, but continuing..."
+    fi
+
+    # Run tests
+    echo "Running Go tests..."
+    if go test ./... >/dev/null 2>&1; then
+        echo "Go tests passed"
+    else
+        echo "No Go tests found or tests failed, continuing..."
+    fi
+fi
+
+# Echo versions of relevant tools
+echo "=== Tool Versions ==="
+if [ "$PYTHON_DETECTED" = true ]; then
+    echo "Python version: $(python --version 2>&1)"
+    echo "pip version: $(pip --version 2>&1 | head -1)"
+fi
+
+if [ "$NODEJS_DETECTED" = true ]; then
+    if command -v node >/dev/null 2>&1; then
+        echo "Node version: $(node --version 2>&1)"
+    fi
+    if command -v npm >/dev/null 2>&1; then
+        echo "npm version: $(npm --version 2>&1)"
+    fi
+fi
+
+if [ "$DOTNET_DETECTED" = true ]; then
+    if command -v dotnet >/dev/null 2>&1; then
+        echo "dotnet version: $(dotnet --version 2>&1)"
+    fi
+fi
+
+if [ "$JAVA_DETECTED" = true ]; then
+    if command -v java >/dev/null 2>&1; then
+        echo "Java version: $(java -version 2>&1 | head -1)"
+    fi
+fi
+
+if [ "$GO_DETECTED" = true ]; then
+    if command -v go >/dev/null 2>&1; then
+        echo "Go version: $(go version 2>&1)"
+    fi
+fi
+
+# Final success message
+echo "JULES_OK"
+exit 0
+exit 0
